@@ -5,114 +5,16 @@ import           Data.Char                      ( digitToInt
                                                 )
 import           Data.List                      ( elemIndex )
 
-interpreter :: String -> String -> String
-interpreter code tape = loop LoopState { currentInstruction = 0
-                                       , memory = map digitToInt tape
-                                       , currentCell = 0
-                                       }
- where
-  loop loopState@LoopState { currentInstruction = currentInstruction, memory = memory, currentCell = currentCell }
-    | currentInstruction >= length code
-    = result
-    | currentCell < 0 || currentCell >= length tape
-    = result
-    | otherwise
-    = loop $ performInstruction code loopState
-    where result = map intToDigit memory
-
-flipBitAt :: Int -> [Int] -> [Int]
-flipBitAt idx bits = concat [take idx bits, [flippedBit], drop (idx + 1) bits]
- where
-  flippedBit = case lookup idx (zip [0 ..] bits) of
-    Just 1  -> 0
-    Just 0  -> 1
-    Nothing -> error "Something wrong with your memory"
-
-findMatchingBraceFor :: Char -> Int -> String -> Int
-findMatchingBraceFor '[' from code =
-  let (_, _, result) = foldl
-        (\(idx, tally, result) x -> case result of
-          Just idxOfMatch -> (-1, -1, Just idxOfMatch)
-          Nothing         -> if x == '[' && idx > from
-            then (idx + 1, tally + 1, Nothing)
-            else if x == ']' && tally /= 0
-              then (idx + 1, tally - 1, Nothing)
-              else if x == ']' && tally == 0
-                then (-1, -1, Just idx)
-                else (idx + 1, tally, Nothing)
-        )
-        (0, 0, Nothing)
-        code
-  in  case result of
-        Just matchingIdx -> matchingIdx + 1
-        Nothing          -> error "Something wrong with your code"
-findMatchingBraceFor ']' from code =
-  let adjustedFrom   = length code - from - 1
-      (_, _, result) = foldr
-        (\x (idx, tally, result) -> case result of
-          Just idxOfMatch -> (-1, -1, Just idxOfMatch)
-          Nothing         -> if x == ']' && idx > adjustedFrom
-            then (idx + 1, tally + 1, Nothing)
-            else if x == '[' && tally /= 0
-              then (idx + 1, tally - 1, Nothing)
-              else if x == '[' && tally == 0
-                then (-1, -1, Just idx)
-                else (idx + 1, tally, Nothing)
-        )
-        (0, 0, Nothing)
-        code
-  in  case result of
-        Just matchingIdx -> length code - matchingIdx - 1
-        Nothing          -> error "Something wrong with your code"
-
-instructionOfSymbol :: Char -> Instruction
-instructionOfSymbol '>' = MoveRight
-instructionOfSymbol '<' = MoveLeft
-instructionOfSymbol '*' = Flip
-instructionOfSymbol '[' = JumpForward
-instructionOfSymbol ']' = JumpBack
-instructionOfSymbol _   = Ignore
-
-performInstruction :: String -> LoopState -> LoopState
-performInstruction code LoopState { currentInstruction = currentInstruction, memory = memory, currentCell = currentCell }
-  = case instructionOfSymbol $ code !! currentInstruction of
-    MoveRight -> LoopState { currentInstruction = currentInstruction + 1
-                           , memory             = memory
-                           , currentCell        = currentCell + 1
-                           }
-    MoveLeft -> LoopState { currentInstruction = currentInstruction + 1
-                          , memory             = memory
-                          , currentCell        = currentCell - 1
-                          }
-    Flip -> LoopState { currentInstruction = currentInstruction + 1
-                      , memory             = flipBitAt currentCell memory
-                      , currentCell        = currentCell
-                      }
-    JumpForward -> if memory !! currentCell == 0
-      then LoopState
-        { currentInstruction = findMatchingBraceFor '[' currentInstruction code
-        , memory             = memory
-        , currentCell        = currentCell
-        }
-      else ignored
-    JumpBack -> if memory !! currentCell == 1
-      then LoopState
-        { currentInstruction = findMatchingBraceFor ']' currentInstruction code
-        , memory             = memory
-        , currentCell        = currentCell
-        }
-      else ignored
-    Ignore -> ignored
- where
-  ignored = LoopState { currentInstruction = currentInstruction + 1
-                      , memory             = memory
-                      , currentCell        = currentCell
-                      }
-
-data LoopState = LoopState {
+data InterState = InterState {
   currentInstruction :: Int,
   memory :: [Int],
-  currentCell :: Int
+  currentCell :: Int,
+  loopStack :: [Loop]
+}
+
+data Loop = Loop {
+  index :: Int,
+  executing :: Bool
 }
 
 data Instruction =
@@ -122,3 +24,99 @@ data Instruction =
   | JumpForward
   | JumpBack
   | Ignore
+
+moveRight :: InterState -> InterState
+moveRight interState = interState
+  { currentInstruction = currentInstruction interState + 1
+  , currentCell        = currentCell interState + 1
+  }
+
+moveLeft :: InterState -> InterState
+moveLeft interState = interState
+  { currentInstruction = currentInstruction interState + 1
+  , currentCell        = currentCell interState - 1
+  }
+
+flipIt :: InterState -> InterState
+flipIt interState = interState
+  { currentInstruction = currentInstruction interState + 1
+  , memory             = flipBitAt (currentCell interState) (memory interState)
+  }
+
+jumpForward :: InterState -> InterState
+jumpForward interState@InterState { memory = memory, currentCell = currentCell, currentInstruction = currentInstruction, loopStack = loopStack }
+  = if memory !! currentCell == 0
+    then interState
+      { currentInstruction = currentInstruction + 1
+      , loopStack = Loop { index = currentInstruction, executing = False }
+                      : loopStack
+      }
+    else interState
+      { currentInstruction = currentInstruction + 1
+      , loopStack = Loop { index = currentInstruction, executing = True }
+                      : loopStack
+      }
+
+jumpBack :: InterState -> InterState
+jumpBack interState@InterState { memory = memory, currentCell = currentCell, currentInstruction = currentInstruction, loopStack = loopStack }
+  = if memory !! currentCell == 1
+    then interState { currentInstruction = index . head $ loopStack
+                    , loopStack          = tail loopStack
+                    }
+    else interState { currentInstruction = currentInstruction + 1
+                    , loopStack          = tail loopStack
+                    }
+
+ignoreIt :: InterState -> InterState
+ignoreIt interState =
+  interState { currentInstruction = currentInstruction interState + 1 }
+
+interpreter :: String -> String -> String
+interpreter code tape = execute InterState { currentInstruction = 0
+                                           , memory = map digitToInt tape
+                                           , currentCell        = 0
+                                           , loopStack          = []
+                                           }
+ where
+  execute interState
+    | currentInstruction interState >= length code = result
+    | currentCell interState < 0 || currentCell interState >= length tape = result
+    | otherwise = execute $ performInstruction code interState
+    where result = map intToDigit (memory interState)
+
+flipBitAt :: Int -> [Int] -> [Int]
+flipBitAt idx bits = concat [take idx bits, [flippedBit], drop (idx + 1) bits]
+ where
+  flippedBit = case lookup idx (zip [0 ..] bits) of
+    Just 1  -> 0
+    Just 0  -> 1
+    Nothing -> error "Something wrong with your memory"
+
+instructionOfSymbol :: Char -> Instruction
+instructionOfSymbol '>' = MoveRight
+instructionOfSymbol '<' = MoveLeft
+instructionOfSymbol '*' = Flip
+instructionOfSymbol '[' = JumpForward
+instructionOfSymbol ']' = JumpBack
+instructionOfSymbol _   = Ignore
+
+performInstruction :: String -> InterState -> InterState
+performInstruction code interState@InterState { currentInstruction = currentInstruction, loopStack = loopStack@(Loop { executing = False } : _) }
+  = case instructionOfSymbol $ code !! currentInstruction of
+    JumpForward -> interState
+      { loopStack = Loop { executing = False, index = currentInstruction }
+                      : loopStack
+      , currentInstruction = currentInstruction + 1
+      }
+    JumpBack -> interState { loopStack          = tail loopStack
+                           , currentInstruction = currentInstruction + 1
+                           }
+    _ -> ignoreIt interState
+performInstruction code interState@InterState { currentInstruction = currentInstruction }
+  = case instructionOfSymbol $ code !! currentInstruction of
+    MoveRight   -> moveRight interState
+    MoveLeft    -> moveLeft interState
+    Flip        -> flipIt interState
+    JumpForward -> jumpForward interState
+    JumpBack    -> jumpBack interState
+    Ignore      -> ignoreIt interState
